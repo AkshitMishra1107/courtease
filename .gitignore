@@ -1,0 +1,6 @@
+# Dependency directory
+/node_modules
+
+# Local secrets and config
+.env
+serviceAccountKey.json
