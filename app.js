@@ -5,19 +5,20 @@
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
+// app.js (Near the top)
 const express = require("express");
 const bodyParser = require("body-parser");
-const axios = require("axios");
-const admin = require("firebase-admin");
-const multer = require("multer");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const cors = require("cors"); // <--- Ensure this is required
 
 const app = express();
 const PORT = 3000;
-app.use(cors());
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ extended: true }));
-const upload = multer({ storage: multer.memoryStorage() });
+
+// Middleware Setup: MUST BE IN THIS ORDER
+
+app.use(cors()); // 1. CORS enabled FIRST
+app.use(bodyParser.json({ limit: '50mb' })); // 2. JSON body parser SECOND
+app.use(bodyParser.urlencoded({ extended: true })); // 3. URL-encoded parser THIRD
+const upload = multer({ storage: multer.memoryStorage() }); // 4. Multer setup
 
 // ==================================================================
 // 1. CONFIGURATION
