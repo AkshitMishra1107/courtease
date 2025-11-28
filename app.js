@@ -25,9 +25,9 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const CONFIG = {
     // Read keys from environment variables for deployment (SECURE)
-    FIREBASE_WEB_API_KEY: process.env.FIREBASE_WEB_API_KEY || "AIzaSyBgEW7nufPiPHeNABxEjRFQ_S0ZBWWEPUs", 
-    INDIAN_KANOON_TOKEN: process.env.INDIAN_KANOON_TOKEN || "92e7ba8f47475b4b08606392639fe0bc8dae7ccf", 
-    GEMINI_API_KEY: process.env.GEMINI_API_KEY || "AIzaSyABQakqMyqMOl8G8EYZbetL3WKpFdYCXgw",
+    FIREBASE_WEB_API_KEY: process.env.FIREBASE_WEB_API_KEY, 
+    INDIAN_KANOON_TOKEN: process.env.INDIAN_KANOON_TOKEN , 
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
     
     // Kept for local fallback only:
     FIREBASE_KEY_PATH: "./serviceAccountKey.json"
