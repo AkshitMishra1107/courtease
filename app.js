@@ -948,26 +948,36 @@ app.get('/analyzer', (req, res) => res.send(render('Analyzer', `
 // 8. CASE MANAGEMENT
 // ==================================================================
 
+// ==================================================================
+// 8. CASE MANAGEMENT
+// ==================================================================
+
 const nodemailer = require("nodemailer");
 
+// FIX: Read credentials from Environment Variables
 const mailer = nodemailer.createTransport({
     service: "gmail",
     auth: {
-        user: "courtease.noreply@gmail.com",
-        pass: "dummy-password" 
+        user: process.env.EMAIL_USER, // Reads from Vercel
+        pass: process.env.EMAIL_PASS  // Reads from Vercel
     }
 });
 
 async function sendMail(to, subject, msg) {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.log("⚠️ Email skipped: Missing EMAIL_USER or EMAIL_PASS in env vars");
+        return;
+    }
     try {
         await mailer.sendMail({
-            from: "CourtEase <courtease.noreply@gmail.com>",
+            from: `"CourtEase Team" <${process.env.EMAIL_USER}>`,
             to,
             subject,
             html: msg
         });
+        console.log("✅ Email sent to:", to);
     } catch (e) {
-        console.log("Email failed (ignored):", e.message);
+        console.log("❌ Email failed:", e.message);
     }
 }
 
