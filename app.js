@@ -86,12 +86,23 @@ async function registerUser(name, email, password, role) {
     if (IS_FIREBASE_LIVE) {
         try {
             const userRecord = await admin.auth().createUser({ email, password, displayName: name });
-            // This line specifically causes 5 NOT_FOUND if Firestore isn't created in Console
+            
+            // 1. Save to Database
             await db.collection('users').doc(userRecord.uid).set({ 
                 name, email, role, 
                 createdAt: new Date().toISOString(),
                 stats: { cases: 0, docs: 0 }
             });
+
+            // 2. SEND WELCOME EMAIL (FIX ADDED HERE)
+            await sendMail(
+                email, 
+                "Welcome to CourtEase", 
+                `<h2>Welcome, ${name}!</h2>
+                 <p>Your account has been successfully created as a <b>${role}</b>.</p>
+                 <p>You can now log in to your dashboard.</p>`
+            );
+
             return { success: true };
         } catch (e) { return { success: false, message: e.message }; }
     }
