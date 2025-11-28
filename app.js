@@ -1,20 +1,25 @@
 // app.js
 // CourtEase — FINAL SUBMISSION
 // Features: Real PDF Reading (Via Gemini Vision), Real Firebase, Fixed Model Names
-// app.js (Add this at the very first line)
+
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
-// app.js (Near the top)
+
+// --- FIXED IMPORTS (THESE WERE MISSING) ---
 const express = require("express");
 const bodyParser = require("body-parser");
-const cors = require("cors"); // <--- Ensure this is required
+const cors = require("cors");
+const multer = require("multer"); // <--- Added
+const axios = require("axios");   // <--- Added
+const admin = require("firebase-admin"); // <--- Added
+const { GoogleGenerativeAI } = require("@google/generative-ai"); // <--- Added
+// ------------------------------------------
 
 const app = express();
 const PORT = 3000;
 
 // Middleware Setup: MUST BE IN THIS ORDER
-
 app.use(cors()); // 1. CORS enabled FIRST
 app.use(bodyParser.json({ limit: '50mb' })); // 2. JSON body parser SECOND
 app.use(bodyParser.urlencoded({ extended: true })); // 3. URL-encoded parser THIRD
@@ -33,6 +38,7 @@ const CONFIG = {
     // Kept for local fallback only:
     FIREBASE_KEY_PATH: "./serviceAccountKey.json"
 };
+
 // ==================================================================
 // 2. INITIALIZATION
 // ==================================================================
@@ -41,7 +47,6 @@ let db = null;
 let IS_FIREBASE_LIVE = false;
 let genAI = null;
 
-// Firebase
 // Firebase
 try {
     const serviceAccountJsonString = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -81,6 +86,7 @@ async function registerUser(name, email, password, role) {
     if (IS_FIREBASE_LIVE) {
         try {
             const userRecord = await admin.auth().createUser({ email, password, displayName: name });
+            // This line specifically causes 5 NOT_FOUND if Firestore isn't created in Console
             await db.collection('users').doc(userRecord.uid).set({ 
                 name, email, role, 
                 createdAt: new Date().toISOString(),
@@ -141,16 +147,9 @@ async function searchJudgments(query) {
 
 // --- 🚀 FIXED AI FUNCTIONS ---
 
-/**
- * Robust processDocument(buffer)
- * - Tries SDK generateContent via @google/generative-ai
- * - Falls back to REST v1 endpoint if SDK path fails
- * - Returns an object: { summary, facts, judgments: [], solutions: [] }
- */
 async function processDocument(buffer) {
   if (!CONFIG.GEMINI_API_KEY) return { summary: "AI Key Missing", facts: "", judgments: [], solutions: [] };
 
-  // prepare prompt
   const prompt = `
 You are a Senior Indian Advocate. Read the provided PDF content (a case document) and meticulously extract the core facts and key legal points. Output a JSON object ONLY (no markdown):
 
@@ -162,19 +161,15 @@ You are a Senior Indian Advocate. Read the provided PDF content (a case document
 }
 `;
 
-  // Base64 PDF for vision input (SDK may accept inlineData)
   const base64Data = buffer.toString("base64");
   const defaultErrorResponse = { summary: "Error analyzing document", facts: "", judgments: [], solutions: [] };
 
-  // prefer SDK call if genAI exists
   try {
     if (genAI && typeof genAI.getGenerativeModel === "function") {
-      // use a supported model id
       const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-      // SDK supports multimodal input in many versions; try a safe call:
       const sdkPayload = [
         { inlineData: { data: base64Data, mimeType: "application/pdf" } },
-        { text: prompt } // Using {text: prompt} instead of just 'prompt' for cleaner structure
+        { text: prompt } 
       ];
 
       const result = await model.generateContent(sdkPayload);
@@ -188,10 +183,8 @@ You are a Senior Indian Advocate. Read the provided PDF content (a case document
     }
   } catch (sdkErr) {
     console.warn("SDK path failed:", sdkErr?.message || sdkErr);
-    // fallthrough to REST fallback
   }
 
-  // REST fallback: call v1 endpoint explicitly to avoid v1beta/model mismatch
   try {
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`;
     const body = {
@@ -211,9 +204,7 @@ You are a Senior Indian Advocate. Read the provided PDF content (a case document
     };
 
     const r = await axios.post(url, body, { headers: { 'Content-Type': 'application/json' } });
-    // attempt to get generated text from common response shapes
     const cand = r.data?.candidates?.[0] || r.data?.result || r.data;
-    // possible places the text may live:
     const text = cand?.content?.[0]?.text || cand?.content?.text || cand?.output?.[0]?.content?.text || cand?.output?.text || JSON.stringify(r.data);
     const cleaned = String(text).replace(/```json/g, "").replace(/```/g, "").trim();
     try { return JSON.parse(cleaned); } catch (e) {
@@ -225,27 +216,18 @@ You are a Senior Indian Advocate. Read the provided PDF content (a case document
   }
 }
 
-/**
- * chatAI(msg)
- * - sends a prompt to Gemini (sdk then rest fallback)
- */
 async function chatAI(msg) {
   if (!CONFIG.GEMINI_API_KEY) return "AI Key Missing";
-
   const prompt = `You are an Indian Lawyer. Answer briefly and plainly to the user question: "${msg}"`;
 
-  // SDK attempt
   try {
     if (genAI && typeof genAI.getGenerativeModel === "function") {
       const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
       const res = await model.generateContent(prompt);
       return (res?.response?.text && res.response.text()) || String(res);
     }
-  } catch (e) {
-    console.warn("chatAI SDK failed:", e?.message || e);
-  }
+  } catch (e) { console.warn("chatAI SDK failed:", e?.message || e); }
 
-  // REST fallback
   try {
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`;
     const body = { contents: [{ parts: [{ text: prompt }] }] };
@@ -253,25 +235,17 @@ async function chatAI(msg) {
     const cand = r.data?.candidates?.[0] || r.data;
     return cand?.content?.[0]?.text || cand?.content?.text || JSON.stringify(r.data);
   } catch (err) {
-    console.error("chatAI REST error:", err?.response?.data || err?.message || err);
     return "AI Error: " + (err?.response?.data?.error?.message || err?.message || "unknown");
   }
 }
 
-/**
- * analyzeCase(text)
- * - returns JSON: { summary, facts, strengths:[], weaknesses:[] }
- */
 async function analyzeCase(text) {
   if (!CONFIG.GEMINI_API_KEY) return { summary: "AI Error - key missing", facts: "", strengths: [], weaknesses: [] };
-
   const prompt = `Analyze this case under Indian Law. First, re-state the core facts concisely, then perform the SWOT. Return JSON ONLY:
 { "summary": "Overall analysis summary...", "facts": "The core facts provided: ${text}", "strengths": ["..."], "weaknesses": ["..."] }
 Case Facts: ${text}`;
-
   const defaultErrorResponse = { summary: "Analysis Failed", facts: text, strengths: [], weaknesses: [] };
   
-  // SDK
   try {
     if (genAI && typeof genAI.getGenerativeModel === "function") {
       const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
@@ -280,11 +254,8 @@ Case Facts: ${text}`;
       const cleaned = txt.replace(/```json/g, "").replace(/```/g, "").trim();
       return JSON.parse(cleaned);
     }
-  } catch (sdkErr) {
-    console.warn("analyzeCase SDK failed:", sdkErr?.message || sdkErr);
-  }
+  } catch (sdkErr) { console.warn("analyzeCase SDK failed:", sdkErr?.message || sdkErr); }
 
-  // REST fallback
   try {
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`;
     const body = { contents: [{ parts: [{ text: prompt }] }] };
@@ -294,7 +265,6 @@ Case Facts: ${text}`;
     const cleaned = String(txt).replace(/```json/g, "").replace(/```/g, "").trim();
     return JSON.parse(cleaned);
   } catch (restErr) {
-    console.error("analyzeCase REST error:", restErr?.response?.data || restErr?.message || restErr);
     return { ...defaultErrorResponse, summary: "Analysis Failed: " + (restErr?.response?.data?.error?.message || restErr?.message || "unknown") };
   }
 }
@@ -494,10 +464,7 @@ app.post('/api/chat', async (req, res) => res.json({ reply: await chatAI(req.bod
 
 app.post('/api/upload', upload.single('document'), async (req, res) => {
     if (!req.file) return res.json({ success: false, message: "No file" });
-    
-    // CALL THE NEW VISION FUNCTION
     const result = await processDocument(req.file.buffer);
-    
     if(typeof result === 'string' && result.startsWith("Error")) {
         return res.json({ success: false, message: result });
     }
@@ -782,8 +749,6 @@ app.get('/upload', (req, res) => res.send(render('Upload & Research', `
             document.getElementById('loader').style.display = 'none';
             if(res.success) {
                 const d = res.data;
-            
-                // save case to DB and get the new ID
                 const saveRes = await apiCall('/api/save-case', {
                     userId: currentUser.id,
                     email: currentUser.email,
@@ -792,7 +757,6 @@ app.get('/upload', (req, res) => res.send(render('Upload & Research', `
 
                 if(saveRes.success) {
                     currentCaseId = saveRes.caseId;
-
                     document.getElementById('result').style.display = 'block';
                     document.getElementById('sum').innerText = d.summary;
                     document.getElementById('facts').innerText = d.facts || "Facts not available.";
@@ -847,16 +811,12 @@ app.get('/track', (req, res) => res.send(render('Case Tracking', `
 
     <script>
         let casesData = [];
-
         async function loadCases() {
             let api = currentUser.role === 'Lawyer' ? '/api/all-cases' : '/api/get-cases';
             let body = currentUser.role === 'Litigant' ? { userId: currentUser.id } : {};
-            
             const res = await apiCall(api, body);
-            
             const caseListDiv = document.getElementById('caseList');
             caseListDiv.innerHTML = '';
-            
             if(res.success && res.cases.length > 0) {
                 casesData = res.cases;
                 res.cases.forEach(c => {
@@ -874,21 +834,17 @@ app.get('/track', (req, res) => res.send(render('Case Tracking', `
                 caseListDiv.innerHTML = '<p>No cases found.</p>';
             }
         }
-
         function viewCase(caseId) {
             const caseDetail = casesData.find(c => c.caseId === caseId);
             if (!caseDetail) return;
-            
             document.getElementById('caseList').style.display = 'none';
             document.getElementById('caseDetail').style.display = 'block';
-
             document.getElementById('caseIdDisplay').innerText = caseId;
             document.getElementById('caseDetailTitle').innerText = 'Case ID: ' + caseId;
             document.getElementById('statusDisplay').innerText = caseDetail.status;
             document.getElementById('hearingDateDisplay').innerText = caseDetail.hearingDate || 'TBD';
             document.getElementById('summaryDetail').innerText = caseDetail.summary;
             document.getElementById('factsDetail').innerText = caseDetail.facts || "Facts not available.";
-
             if (currentUser.role === 'Lawyer') {
                 document.getElementById('lawyerControls').style.display = 'block';
                 document.getElementById('newStatus').value = caseDetail.status;
@@ -897,23 +853,17 @@ app.get('/track', (req, res) => res.send(render('Case Tracking', `
                 document.getElementById('lawyerControls').style.display = 'none';
             }
         }
-
         async function updateCase() {
             const caseId = document.getElementById('caseIdDisplay').innerText;
             const status = document.getElementById('newStatus').value;
             const hearingDate = document.getElementById('newHearingDate').value;
-            
             await apiCall('/api/cases/update-status', { caseId, status });
             await apiCall('/api/cases/update-hearing', { caseId, hearingDate });
-            
             alert('Case updated successfully! Client will be notified.');
-            
-            // Re-load and re-render the case list/detail
             await loadCases();
             viewCase(caseId);
         }
-
-        loadCases(); // Initial load
+        loadCases(); 
     </script>
 `, {name:"User", role:"Member"}, true)));
 
@@ -952,15 +902,12 @@ app.get('/analyzer', (req, res) => res.send(render('Analyzer', `
         let allCases = [];
         const urlParams = new URLSearchParams(window.location.search);
         const preselectCaseId = urlParams.get('caseId');
-
         async function fetchCasesForSelector() {
             const api = currentUser.role === 'Lawyer' ? '/api/all-cases' : '/api/get-cases';
             const body = currentUser.role === 'Litigant' ? { userId: currentUser.id } : {};
             const res = await apiCall(api, body);
-            
             const selector = document.getElementById('caseSelector');
             selector.innerHTML = '<option value="">-- Select a Saved Case --</option>';
-
             if (res.success && res.cases.length > 0) {
                 allCases = res.cases;
                 res.cases.forEach(c => {
@@ -969,55 +916,45 @@ app.get('/analyzer', (req, res) => res.send(render('Analyzer', `
                     option.textContent = 'Case ' + c.caseId;
                     selector.appendChild(option);
                 });
-
                 if (preselectCaseId) {
                     selector.value = preselectCaseId;
                     loadCaseFacts();
                 }
             }
         }
-
         function loadCaseFacts() {
             const caseId = document.getElementById('caseSelector').value;
             const caseData = allCases.find(c => c.caseId === caseId);
             document.getElementById('txt').value = caseData ? caseData.facts : '';
         }
-
         async function an(){
             const facts = document.getElementById('txt').value;
             if (facts.trim() === "") { alert("Please enter case facts or select a case."); return; }
-
             document.getElementById('out').style.display = 'block';
             document.getElementById('analysisSummary').innerHTML = '<strong>Thinking...</strong>';
             document.getElementById('strengthsList').innerHTML = '';
             document.getElementById('weaknessesList').innerHTML = '';
-
             const res = await apiCall('/api/analyze', { text: facts });
-            
             const data = res.data;
             document.getElementById('analysisSummary').innerText = data.summary;
             document.getElementById('strengthsList').innerHTML = data.strengths.map(s => \`<li>\${s}</li>\`).join('');
             document.getElementById('weaknessesList').innerHTML = data.weaknesses.map(w => \`<li>\${w}</li>\`).join('');
         }
-
         fetchCasesForSelector();
     </script>
 `, {name:"User"}, true)));
 
 // ==================================================================
-// 8. CASE MANAGEMENT (NEW FEATURES)
+// 8. CASE MANAGEMENT
 // ==================================================================
 
 const nodemailer = require("nodemailer");
 
-// -------------------------------
-// Email Sender (Simple)
-// -------------------------------
 const mailer = nodemailer.createTransport({
     service: "gmail",
     auth: {
         user: "courtease.noreply@gmail.com",
-        pass: "dummy-password"  // YOU MAY PUT ANYTHING, EMAIL NOT REQUIRED TO WORK
+        pass: "dummy-password" 
     }
 });
 
@@ -1034,19 +971,14 @@ async function sendMail(to, subject, msg) {
     }
 }
 
-// -------------------------------
-// Save Case After Upload
-// -------------------------------
 async function saveCaseToDB(userId, caseData) {
     if (!IS_FIREBASE_LIVE) return "MOCK-CASE-" + Date.now();
-
     const caseId = "CASE-" + Date.now();
-
     await db.collection("cases").doc(caseId).set({
         caseId,
         userId,
         summary: caseData.summary,
-        facts: caseData.facts, // <-- NEW FIELD: Facts of the case
+        facts: caseData.facts, 
         judgments: caseData.judgments,
         solutions: caseData.solutions,
         status: "Submitted",
@@ -1054,23 +986,13 @@ async function saveCaseToDB(userId, caseData) {
         hearingDate: null,
         createdAt: new Date().toISOString()
     });
-
     return caseId;
 }
 
-// ==================================================================
-// APIs
-// ==================================================================
-
-// 1. SAVE CASE FROM UPLOAD
 app.post("/api/save-case", async (req, res) => {
     if (!IS_FIREBASE_LIVE) return res.json({ success: true, message: "Mock Mode" });
-
     const { userId, email, data } = req.body;
-
     const caseId = await saveCaseToDB(userId, data);
-
-    // email notify
     sendMail(
         email,
         "Case Uploaded Successfully",
@@ -1078,29 +1000,21 @@ app.post("/api/save-case", async (req, res) => {
          <p>Case ID: <b>${caseId}</b></p>
          <p>Summary: ${data.summary}</p>`
     );
-
     res.json({ success: true, caseId });
 });
 
-// 2. GET CASES FOR USER (Litigant)
 app.post("/api/get-cases", async (req, res) => {
     if (!IS_FIREBASE_LIVE) return res.json({ success: true, cases: [] });
-
     const { userId } = req.body;
     const snap = await db.collection("cases").where("userId", "==", userId).get();
-
     res.json({
         success: true,
         cases: snap.docs.map(d => d.data())
     });
 });
 
-// 3. GET ALL CASES (LAWYER PORTAL)
-app.post("/api/all-cases", async (req, res) => { // Changed to POST for consistency, though GET is fine
+app.post("/api/all-cases", async (req, res) => { 
     if (!IS_FIREBASE_LIVE) return res.json({ success: true, cases: [] });
-
-    // In a real app, a lawyer would only see cases assigned to them.
-    // For this prototype, we'll return all cases for a "Lawyer" view.
     const snap = await db.collection("cases").get();
     res.json({
         success: true,
@@ -1108,12 +1022,9 @@ app.post("/api/all-cases", async (req, res) => { // Changed to POST for consiste
     });
 });
 
-// 4. ADD NOTE TO CASE
 app.post("/api/cases/add-note", async (req, res) => {
     if (!IS_FIREBASE_LIVE) return res.json({ success: true, message: "Mock Mode" });
-    
     const { caseId, note } = req.body;
-
     const ref = db.collection("cases").doc(caseId);
     await ref.update({
         notes: admin.firestore.FieldValue.arrayUnion({
@@ -1121,65 +1032,43 @@ app.post("/api/cases/add-note", async (req, res) => {
             time: new Date().toISOString()
         })
     });
-
     res.json({ success: true });
 });
 
-// 5. UPDATE HEARING DATE (Sends Client Notification)
 app.post("/api/cases/update-hearing", async (req, res) => {
     if (!IS_FIREBASE_LIVE) return res.json({ success: true, message: "Mock Mode" });
-
     const { caseId, hearingDate } = req.body;
-
     const ref = db.collection("cases").doc(caseId);
     await ref.update({ hearingDate });
-
-    // Simplified Notification: Find user's email (Requires a more robust user-to-case link)
-    // For now, assuming the client's userId is in the case document
     const caseDoc = await ref.get();
     const userId = caseDoc.data()?.userId;
     const userDoc = await db.collection('users').doc(userId).get();
     const clientEmail = userDoc.data()?.email;
-
     if(clientEmail) {
         sendMail(clientEmail, 
                  "Case Update: New Hearing Date", 
                  `<p>The next hearing for your case (<b>${caseId}</b>) has been scheduled for <b>${hearingDate}</b>.</p>`);
     }
-
     res.json({ success: true });
 });
 
-// 6. UPDATE CASE STATUS (Sends Client Notification)
 app.post("/api/cases/update-status", async (req, res) => {
     if (!IS_FIREBASE_LIVE) return res.json({ success: true, message: "Mock Mode" });
-
     const { caseId, status } = req.body;
-
     const ref = db.collection("cases").doc(caseId);
     await ref.update({ status });
-
-    // Simplified Notification: Find user's email
     const caseDoc = await ref.get();
     const userId = caseDoc.data()?.userId;
     const userDoc = await db.collection('users').doc(userId).get();
     const clientEmail = userDoc.data()?.email;
-
     if(clientEmail) {
         sendMail(clientEmail, 
                  "Case Update: Status Changed", 
                  `<p>The status for your case (<b>${caseId}</b>) has been updated to <b>${status}</b>.</p>`);
     }
-
     res.json({ success: true });
 });
 
-// ==================================================================
-// END NEW FEATURES
-// ==================================================================
-
-// Vercel only uses the exported app, and manages the listener internally.
-// Only listen locally if the file is run directly (for development).
 if (process.env.NODE_ENV !== 'production') {
     app.listen(PORT, () => console.log(`CourtEase running on http://localhost:${PORT}`));
 }
