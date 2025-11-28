@@ -4,3 +4,5 @@
 # Local secrets and config
 .env
 serviceAccountKey.json
+.vercel
+.env*.local
